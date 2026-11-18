@@ -16,7 +16,8 @@ No day given -> DEFAULT_DAY (Friday).
 Run:   python bot.py          (needs: pip install requests)
 
 Settings are environment variables (all optional except the token):
-    BOT_TOKEN           bot token from @BotFather
+    BOT_TOKEN           bot token from @BotFather (environment variable, or a line
+                        BOT_TOKEN=... in a .env file next to bot.py)
     DEFAULT_DAY         Friday
     USE_POLL            1 = empty sessions as a public multi-answer poll (default), 0 = text only
     COMBINE_SLOTS       text mode only: 0 = one message per slot, 1 = one message for all slots
@@ -58,8 +59,41 @@ from venues import VenueStore, is_public_page_url, normalize_link, parse_venues
 # Settings
 # ---------------------------------------------------------------------------
 
-# Set BOT_TOKEN in the environment. Never commit or hardcode the bot token.
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+def _load_dotenv(path: str) -> None:
+    """Minimal .env reader (KEY=VALUE lines). Variables that are already set and
+    non-empty in the real environment win over the file."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and not os.environ.get(key):
+            os.environ[key] = value
+
+
+def _clean_token(raw: str) -> str:
+    """Tolerate the usual copy/paste and hosting-panel mistakes: surrounding spaces
+    or quotes, and a leading 'bot' (from the https://api.telegram.org/bot<TOKEN> URL)."""
+    token = raw.strip().strip("\"'").strip()
+    if token.lower().startswith("bot") and ":" in token:
+        token = token[3:]
+    return token
+
+
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+# Set BOT_TOKEN in the environment (or .env). Never commit or hardcode the bot token.
+BOT_TOKEN = _clean_token(os.environ.get("BOT_TOKEN", ""))
 
 
 def _env_int(name: str, default: int) -> int:
@@ -388,7 +422,18 @@ def main() -> int:
     logging.getLogger("urllib3").setLevel(logging.WARNING)  # its debug lines contain the token
 
     if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        logger.critical("No bot token set. Define the BOT_TOKEN variable (get one from @BotFather).")
+        # Never print the token itself, only what is wrong with it.
+        raw = os.environ.get("BOT_TOKEN")
+        if raw is None:
+            why = "BOT_TOKEN is not set in this process"
+        elif not raw.strip():
+            why = "BOT_TOKEN is set but empty"
+        else:
+            why = f"BOT_TOKEN has no ':' in it (length {len(raw.strip())}) - it should look like 123456789:AA..."
+        similar = sorted(k for k in os.environ if "TOKEN" in k.upper() or k.upper().startswith("BOT"))
+        logger.critical("No usable bot token: %s. Similar variable names visible here: %s. "
+                        "Define BOT_TOKEN for the running process (get one from @BotFather).",
+                        why, ", ".join(similar) or "none")
         return 1
 
     bot = Bot(TelegramClient(BOT_TOKEN), ScheduleService(), VenueStore(VENUES_FILE))
